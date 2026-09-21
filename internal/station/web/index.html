@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>校准追溯站</title>
+<style>
+:root{--bg:#0f172a;--panel:#1e293b;--panel2:#243449;--line:#334155;--text:#e2e8f0;
+--muted:#94a3b8;--accent:#38bdf8;--ok:#4ade80;--warn:#fbbf24;--bad:#f87171;--info:#818cf8;}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+background:var(--bg);color:var(--text);font-size:14px}
+header{padding:14px 22px;background:linear-gradient(90deg,#0c4a6e,#0f172a);border-bottom:1px solid var(--line);
+display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+header h1{margin:0;font-size:20px;letter-spacing:2px}
+header .sub{color:var(--muted);font-size:12px}
+nav{display:flex;gap:4px;padding:8px 16px 0;background:var(--bg);flex-wrap:wrap}
+nav button{background:var(--panel);color:var(--muted);border:1px solid var(--line);
+border-bottom:none;padding:8px 16px;border-radius:8px 8px 0 0;cursor:pointer;font-size:13px}
+nav button.active{background:var(--panel2);color:var(--accent);font-weight:600}
+main{padding:18px 22px;max-width:1280px;margin:0 auto}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:16px}
+.card h2{margin:0 0 10px;font-size:15px;color:var(--accent)}
+.card h3{margin:14px 0 8px;font-size:13px;color:var(--muted)}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
+.field{display:flex;flex-direction:column;gap:4px;min-width:120px}
+.field label{font-size:12px;color:var(--muted)}
+input,select,textarea{background:#0b1220;border:1px solid var(--line);color:var(--text);
+border-radius:6px;padding:7px 9px;font-size:13px;font-family:inherit}
+textarea{width:100%;min-height:130px;font-family:ui-monospace,Menlo,monospace}
+button.act{background:var(--accent);color:#082f49;border:none;border-radius:6px;padding:8px 14px;
+font-weight:600;cursor:pointer}
+button.ghost{background:transparent;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:7px 12px;cursor:pointer}
+button.danger{background:transparent;color:var(--bad);border:1px solid #7f1d1d;border-radius:6px;padding:7px 12px;cursor:pointer}
+table{border-collapse:collapse;width:100%;font-size:12.5px}
+th,td{border-bottom:1px solid var(--line);padding:7px 8px;text-align:left;vertical-align:top}
+th{color:var(--muted);font-weight:600;position:sticky;top:0;background:var(--panel)}
+.tag{display:inline-block;padding:1px 8px;border-radius:99px;font-size:11px;font-weight:600}
+.tag.ok{background:#052e16;color:var(--ok)}
+.tag.bad{background:#450a0a;color:var(--bad)}
+.tag.warn{background:#422006;color:var(--warn)}
+.tag.info{background:#1e1b4b;color:var(--info)}
+.muted{color:var(--muted)}
+.mono{font-family:ui-monospace,Menlo,monospace}
+.fp{font-size:10.5px;color:var(--muted);word-break:break-all;max-width:240px}
+.msg{padding:9px 12px;border-radius:6px;margin:8px 0;font-size:13px;white-space:pre-wrap}
+.msg.ok{background:#052e16;border:1px #166534 solid}
+.msg.err{background:#450a0a;border:1px #7f1d1d solid}
+.badge{font-size:11px;padding:1px 6px;border-radius:4px;border:1px solid var(--line);color:var(--muted)}
+.issues li{color:var(--warn)}
+details summary{cursor:pointer;color:var(--accent);margin:4px 0}
+.kv{display:grid;grid-template-columns:150px 1fr;gap:3px 10px;font-size:12.5px}
+.kv dt{color:var(--muted)}
+.kv dd{margin:0;word-break:break-word}
+.scroll{max-height:430px;overflow:auto;border:1px solid var(--line);border-radius:8px}
+a.link{color:var(--accent);cursor:pointer;text-decoration:underline}
+.pillbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.stat{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:12px}
+.stat b{font-size:16px;color:var(--accent)}
+</style>
+</head>
+<body>
+<header>
+  <h1>校准追溯站</h1>
+  <span class="sub">原始读数 · 曲线版本 · 参考点 · 不确定度 · 选择理由 —— 全程可追溯，历史不可变</span>
+  <span style="flex:1"></span>
+  <button class="ghost" onclick="seedDemo()">写入演示数据</button>
+  <button class="ghost" onclick="exportData()">导出</button>
+  <label class="ghost" style="cursor:pointer">导入<input type="file" id="importFile" accept="application/json" style="display:none"></label>
+</header>
+<nav id="nav"></nav>
+<main id="main"></main>
+
+<script>
+const $=(s,el=document)=>el.querySelector(s);
+const $$=(s,el=document)=>[...el.querySelectorAll(s)];
+const api=async (p,opt={})=>{
+  const o={headers:{'Content-Type':'application/json'},...opt};
+  const r=await fetch(p,o); const txt=await r.text();
+  let data=null; try{data=txt?JSON.parse(txt):null}catch{data={raw:txt}}
+  if(!r.ok) throw Object.assign(new Error(data?.error||('HTTP '+r.status)),{data});
+  return data;
+};
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fp=s=>s?`<div class="fp" title="${esc(s)}">${esc(s.slice(0,18))}…</div>`:'';
+const dt=s=>s?new Date(s).toLocaleString('zh-CN',{hour12:false}):'—';
+const num=(v,d=4)=>v==null||isNaN(v)?'—':Number(v).toFixed(d).replace(/\.?0+$/,'');
+
+const TABS=[
+ ['devices','设备与单位'],['refs','参考点'],['curves','曲线版本'],
+ ['import','导入读数'],['results','结果对照'],['compare','版本对比'],
+ ['trace','追溯查询'],['io','导出/校验'],
+];
+let state={tab:'devices',units:[],devices:[],refs:[],versions:[],readings:[]};
+function nav(){
+ $('#nav').innerHTML=TABS.map(([id,n])=>
+  `<button class="${state.tab===id?'active':''}" onclick="go('${id}')">${n}</button>`).join('');
+}
+function go(t){state.tab=t;nav();render();}
+function msg(el,text,kind='err'){el.innerHTML=`<div class="msg ${kind}">${esc(text)}</div>`;}
+async function loadAll(){
+ const [u,d,rf,v,rd]=await Promise.all([
+  api('/api/units'),api('/api/devices'),api('/api/reference-points'),
+  api('/api/versions'),api('/api/readings')]);
+ state.units=u.units;state.devices=d.devices;state.refs=rf.reference_points;
+ state.versions=v.versions;state.readings=rd.rows;
+}
+function statusTag(s){
+ const m={calibrated:['ok','已校准'],out_of_range:['bad','超范围'],no_version:['warn','无可用版本'],
+  ambiguous_versions:['bad','版本歧义'],sample_outside_received_version:['warn','设备时间回拨'],
+  draft:['info','草稿'],published:['ok','已发布']};
+ const [c,t]=m[s]||['info',s];return `<span class="tag ${c}">${t}</span>`;
+}
+</script>
+<script>
+/* ---------- tab: devices ---------- */
+function renderDevices(){
+ const unitOpts=(dim)=>state.units.filter(u=>!dim||u.dimension===dim).map(u=>`<option value="${u.name}">${u.symbol} ${u.name} (${u.dimension})</option>`).join('');
+ return `
+ <div class="card"><h2>登记设备</h2>
+  <div class="row">
+   <div class="field"><label>设备 ID（可空自动生成）</label><input id="d-id" placeholder="如 PT-205"></div>
+   <div class="field"><label>名称</label><input id="d-name" placeholder="压力变送器…"></div>
+   <div class="field"><label>原始量单位（曲线输入）</label><select id="d-raw">${unitOpts()}</select></div>
+   <div class="field"><label>校准单位（曲线输出）</label><select id="d-cal">${unitOpts()}</select></div>
+   <div class="field" style="flex:1"><label>说明</label><input id="d-desc"></div>
+   <button class="act" onclick="saveDevice()">登记</button>
+  </div>
+  <div id="d-msg"></div>
+ </div>
+ <div class="card"><h2>已登记设备（${state.devices.length}）</h2>
+  <div class="scroll"><table><thead><tr>
+   <th>ID</th><th>名称</th><th>原始单位</th><th>校准单位</th><th>修订</th><th>更新时间</th><th>操作</th>
+  </tr></thead><tbody>
+  ${state.devices.map(d=>`<tr>
+   <td class="mono">${esc(d.id)}</td><td>${esc(d.name)}<div class="muted">${esc(d.description)}</div></td>
+   <td>${esc(d.raw_unit)}</td><td>${esc(d.calibrated_unit)}</td>
+   <td><span class="badge">rev ${d.revision}</span></td><td class="muted">${dt(d.updated_at)}</td>
+   <td><a class="link" onclick="editDevice('${d.id}')">编辑（乐观锁）</a></td></tr>`).join('')}
+  </tbody></table></div>
+ </div>
+ <div class="card"><h2>注册自定义单位</h2>
+  <div class="row">
+   <div class="field"><label>单位名</label><input id="u-name" placeholder="如 inH2O"></div>
+   <div class="field"><label>量纲</label>
+    <select id="u-dim">${['pressure','temperature','electric_voltage','electric_current','electric_resistance','frequency','dimensionless'].map(x=>`<option>${x}</option>`).join('')}</select></div>
+   <div class="field"><label>符号</label><input id="u-symbol" placeholder="inH₂O"></div>
+   <div class="field"><label>线性系数（→基本单位）</label><input id="u-factor" type="number" value="248.84"></div>
+   <div class="field"><label>仿射偏移（温度用）</label><input id="u-offset" type="number" value="0"></div>
+   <button class="act" onclick="saveUnit()">注册</button>
+  </div><div id="u-msg"></div>
+  <details><summary>查看全部 ${state.units.length} 个单位（量纲核对依据）</summary>
+   <table><thead><tr><th>单位</th><th>符号</th><th>量纲</th><th>系数</th><th>偏移</th><th>内置</th></tr></thead>
+   <tbody>${state.units.map(u=>`<tr><td class="mono">${u.name}</td><td>${u.symbol}</td><td>${u.dimension}</td>
+   <td>${u.factor}</td><td>${u.offset}</td><td>${u.builtin?'是':'自定义'}</td></tr>`).join('')}</tbody></table>
+  </details>
+ </div>`;
+}
+async function saveDevice(){
+ const body={id:$('#d-id').value.trim(),name:$('#d-name').value.trim(),
+  raw_unit:$('#d-raw').value,calibrated_unit:$('#d-cal').value,description:$('#d-desc').value};
+ try{await api('/api/devices',{method:'POST',body:JSON.stringify(body)});
+  await loadAll();render();}catch(e){msg($('#d-msg'),e.message)}
+}
+async function editDevice(id){
+ const d=state.devices.find(x=>x.id===id);
+ const name=prompt('设备名称',d.name);if(name===null)return;
+ const desc=prompt('说明',d.description||'');if(desc===null)return;
+ const raw=prompt('原始量单位（改单位会影响后续新读数，不影响历史）',d.raw_unit);if(!raw)return;
+ const cal=prompt('校准单位',d.calibrated_unit);if(!cal)return;
+ try{await api('/api/devices/'+id,{method:'PUT',body:JSON.stringify(
+  {name,description:desc,raw_unit:raw,calibrated_unit:cal,expected_revision:d.revision})});
+ await loadAll();render();}catch(e){alert(e.message)}
+}
+async function saveUnit(){
+ const body={name:$('#u-name').value.trim(),dimension:$('#u-dim').value,symbol:$('#u-symbol').value,
+  factor:parseFloat($('#u-factor').value)||0,offset:parseFloat($('#u-offset').value)||0};
+ try{await api('/api/units',{method:'POST',body:JSON.stringify(body)});await loadAll();render();}
+ catch(e){msg($('#u-msg'),e.message)}
+}
+</script>
+</body>
+</html>
+<script>
+/* ---------- tab: references ---------- */
+function renderRefs(){
+ return `
+ <div class="card"><h2>登记参考点</h2>
+  <div class="row">
+   <div class="field"><label>参考点 ID</label><input id="r-id" placeholder="可空"></div>
+   <div class="field"><label>关联设备（可空=通用）</label>
+    <select id="r-dev"><option value="">（通用）</option>${state.devices.map(d=>`<option value="${d.id}">${d.id}</option>`).join('')}</select></div>
+   <div class="field"><label>名称</label><input id="r-name"></div>
+   <div class="field"><label>单位</label><select id="r-unit">${state.units.map(u=>`<option>${u.name}</option>`).join('')}</select></div>
+   <div class="field"><label>数值</label><input id="r-val" type="number"></div>
+   <div class="field"><label>标准不确定度</label><input id="r-unc" type="number" value="0"></div>
+   <div class="field" style="flex:1"><label>来源/证书</label><input id="r-src" placeholder="活塞式压力计 PG-120 / 证书号"></div>
+   <button class="act" onclick="saveRef()">登记</button>
+  </div><div id="r-msg"></div>
+ </div>
+ <div class="card"><h2>参考点列表（${state.refs.length}）</h2>
+  <table><thead><tr><th>ID</th><th>设备</th><th>名称</th><th>量纲</th><th>数值</th><th>不确定度</th><th>来源</th></tr></thead>
+  <tbody>${state.refs.map(r=>`<tr><td class="mono">${r.id}</td><td>${r.device_id||'通用'}</td>
+  <td>${esc(r.name)}</td><td>${r.dimension}</td><td>${num(r.value)}</td>
+  <td>${num(r.uncertainty)}</td><td class="muted">${esc(r.source)}</td></tr>`).join('')}</tbody></table>
+ </div>`;
+}
+async function saveRef(){
+ const body={id:$('#r-id').value.trim(),device_id:$('#r-dev').value,name:$('#r-name').value.trim(),
+  unit:$('#r-unit').value,value:parseFloat($('#r-val').value),uncertainty:parseFloat($('#r-unc').value)||0,
+  source:$('#r-src').value};
+ try{await api('/api/reference-points',{method:'POST',body:JSON.stringify(body)});await loadAll();render();}
+ catch(e){msg($('#r-msg'),e.message)}
+}
+
+/* ---------- tab: curves ---------- */
+function renderCurves(){
+ const devSel=`<select id="c-dev">${state.devices.map(d=>`<option value="${d.id}">${d.id} · ${esc(d.name)}</option>`).join('')}</select>`;
+ return `
+ <div class="card"><h2>新建 / 编辑曲线版本</h2>
+  <div class="row">
+   <div class="field"><label>版本 ID（可空）</label><input id="c-id" placeholder="ver-…"></div>
+   <div class="field"><label>设备</label>${devSel}</div>
+   <div class="field"><label>有效期自 (UTC)</label><input id="c-from" type="datetime-local"></div>
+   <div class="field"><label>有效期至 (UTC，空=长期)</label><input id="c-to" type="datetime-local"></div>
+   <div class="field" style="min-width:200px"><label>说明</label><input id="c-note"></div>
+  </div>
+  <div class="row" style="margin-top:8px">
+   <label class="badge"><input type="checkbox" id="c-extrap"> 显式启用外推</label>
+   <div class="field" style="min-width:220px"><label>外推附加不确定度（每单位距离，校准单位）</label>
+    <input id="c-rate" type="number" value="0" step="any"></div>
+   <span class="muted">区间端点语义按每个区段声明；未声明的重叠会被拒绝。</span>
+  </div>
+  <h3>区段（JSON）</h3>
+  <textarea id="c-segs"></textarea>
+  <div class="row" style="margin-top:8px">
+   <button class="act" onclick="saveVersion(false)">存为草稿</button>
+   <button class="ghost" onclick="fillTemplate()">填入线性模板</button>
+   <button class="ghost" onclick="fillPolyTemplate()">填入多项式模板</button>
+   <button class="ghost" onclick="fillOverlapTemplate()">填入声明重叠模板</button>
+   <span id="c-revholder"></span>
+  </div>
+  <div id="c-msg"></div>
+ </div>
+ <div class="card"><h2>版本、覆盖与间隙</h2><div id="c-list"></div></div>`;
+}
+function defaultSegs(){
+ return JSON.stringify([
+  {type:"linear",label:"低段",lower:0,lower_closed:true,upper:5,upper_closed:false,
+   knots:[{x:0,y:0},{x:5,y:500}],uncertainty:1.2,refs:[]},
+  {type:"linear",label:"高段",lower:5,lower_closed:true,upper:10,upper_closed:true,
+   knots:[{x:5,y:500},{x:10,y:1000}],uncertainty:1.8,refs:[]}
+ ],null,2);
+}
+function fillTemplate(){$('#c-segs').value=defaultSegs()}
+function fillPolyTemplate(){
+ $('#c-segs').value=JSON.stringify([
+  {type:"polynomial",label:"二次修正",lower:0,lower_closed:true,upper:10,upper_closed:true,
+   center:5,coeffs:[500,100,-2],uncertainty:2.0,refs:[]}],null,2);
+}
+function fillOverlapTemplate(){
+ $('#c-segs').value=JSON.stringify([
+  {type:"linear",label:"主曲线",lower:0,lower_closed:true,upper:10,upper_closed:true,priority:1,
+   overlap_group:"g1",knots:[{x:0,y:0},{x:10,y:1000}],uncertainty:2,refs:[]},
+  {type:"linear",label:"局部复核(优先)",lower:4,lower_closed:true,upper:6,upper_closed:true,priority:0,
+   overlap_group:"g1",knots:[{x:4,y:395},{x:6,y:610}],uncertainty:1,refs:[]}],null,2);
+}
+function readVersionBody(){
+ let segs;
+ try{segs=JSON.parse($('#c-segs').value)}catch(e){throw new Error('区段 JSON 解析失败: '+e.message)}
+ const v=a=>a?new Date(a).toISOString():'';
+ return {id:$('#c-id').value.trim(),device_id:$('#c-dev').value,note:$('#c-note').value,
+  valid_from:v($('#c-from').value),valid_to:v($('#c-to').value),
+  allow_extrapolate:$('#c-extrap').checked,
+  extrap_uncertainty_rate:parseFloat($('#c-rate').value)||0,segments:segs};
+}
+async function saveVersion(isPub){
+ let body;try{body=readVersionBody()}catch(e){msg($('#c-msg'),e.message);return}
+ const id=body.id;
+ try{
+  let v;
+  if(isPub){
+   const existing=state.versions.find(x=>x.id===id);
+   v=await api('/api/versions/'+encodeURIComponent(id)+'/publish',
+    {method:'POST',body:JSON.stringify({expected_revision:existing?existing.revision:0})});
+  }else{
+   const isEdit=state.versions.some(x=>x.id===id);
+   v=await api(isEdit?('/api/versions/'+encodeURIComponent(id)):'/api/versions',
+    {method:isEdit?'PUT':'POST',body:JSON.stringify(isEdit?{...body,expected_revision:state.versions.find(x=>x.id===id).revision}:body)});
+  }
+  msg($('#c-msg'),isPub?'已发布，版本冻结。':'草稿已保存。','ok');
+  await loadAll();renderCurvesList();
+ }catch(e){
+  let extra=e.data?.issues?('\n'+e.data.issues.map(i=>'• ['+i.code+'] '+i.message).join('\n')):'';
+  msg($('#c-msg'),e.message+extra);
+ }
+}
+function renderCurvesList(){
+ const el=$('#c-list');
+ el.innerHTML=state.versions.length===0?'<p class="muted">尚无版本</p>':
+  state.versions.map(v=>{
+   const dev=state.devices.find(d=>d.id===v.device_id);
+   return `<div class="card" style="background:var(--panel2)">
+    <div class="row">
+     <b class="mono">${v.id}</b> ${statusTag(v.state)}
+     <span class="badge">rev ${v.revision}</span>
+     <span class="muted">设备 ${esc(v.device_id)}${dev?' · '+esc(dev.name):''}</span>
+     <span style="flex:1"></span>
+     <span class="muted">${dt(v.valid_from)} → ${v.valid_to?dt(v.valid_to):'长期'}</span>
+    </div>
+    <div class="muted" style="margin:4px 0">${esc(v.note)} · 外推 ${v.allow_extrapolate?('开启 (+'+v.extrap_uncertainty_rate+'/单位)'):'关闭'}</div>
+    ${(v.issues&&v.issues.length)?`<ul class="issues">${v.issues.map(i=>`<li>[${i.code}] ${esc(i.message)}</li>`).join('')}</ul>`:
+      `<span class="tag ok">区段校验通过</span>`}
+    <div class="row" style="margin-top:6px">
+     ${v.state==='draft'?`<button class="act" onclick='loadForEdit(${JSON.stringify(v.id)})'>载入编辑</button>
+       <button class="ghost" onclick="publishOne('${v.id}')">发布（乐观锁）</button>`
+       :'<span class="muted">已发布：永久冻结，不可编辑</span>'}
+     <button class="ghost" onclick="showCoverage('${v.id}')">查看覆盖与间隙</button>
+     ${fp(v.fingerprint)}
+    </div>
+    <div id="cov-${v.id}"></div>
+   </div>`;
+  }).join('');
+}
+async function publishOne(id){
+ const v=state.versions.find(x=>x.id===id);
+ try{await api('/api/versions/'+encodeURIComponent(id)+'/publish',
+  {method:'POST',body:JSON.stringify({expected_revision:v.revision})});
+ await loadAll();renderCurvesList();}catch(e){alert(e.message)}
+}
+function loadForEdit(id){
+ const v=state.versions.find(x=>x.id===id);
+ $('#c-id').value=v.id;$('#c-dev').value=v.device_id;$('#c-note').value=v.note||'';
+ $('#c-from').value=v.valid_from?v.valid_from.slice(0,16):'';
+ $('#c-to').value=v.valid_to?v.valid_to.slice(0,16):'';
+ $('#c-extrap').checked=!!v.allow_extrapolate;$('#c-rate').value=v.extrap_uncertainty_rate||0;
+ $('#c-segs').value=JSON.stringify(v.segments,null,2);
+ $('#c-revholder').innerHTML=`<span class="badge">编辑中 rev ${v.revision}（保存时校验乐观锁）</span>`;
+}
+async function showCoverage(id){
+ const box=$('#cov-'+id);box.innerHTML='<span class="muted">计算中…</span>';
+ try{
+  const cov=await api('/api/versions/'+encodeURIComponent(id)+'/coverage');
+  const span=(g)=>`[${num(g.lower)}, ${g.upper==null?'':num(g.upper)}] 端点 ${g.lower_closed?'闭':'开'}/${g.upper_closed?'闭':'开'}`;
+  box.innerHTML=`<div class="kv" style="margin-top:6px">
+   <dt>整体跨度</dt><dd class="mono">${num(cov.min)} … ${num(cov.max)}</dd>
+   <dt>合并覆盖</dt><dd>${cov.covered.map(span).join('；')||'—'}</dd>
+   <dt>内部间隙</dt><dd>${cov.gaps.length?('<b style="color:var(--warn)">'+cov.gaps.map(span).join('；')+'</b>'):'无'}</dd>
+   <dt>区段</dt><dd>${cov.segments.map(s=>`${esc(s.label||s.type)} ${span(s)}${s.overlap_group?(' <span class="tag info">重叠组 '+s.overlap_group+' 优先级 '+s.priority+'</span>'):''}`).join('<br>')}</dd>
+   </div>`;
+ }catch(e){box.innerHTML='<span class="tag bad">'+esc(e.message)+'</span>'}
+}
+</script>
+<script>
+/* ---------- tab: import ---------- */
+function renderImport(){
+ return `
+ <div class="pillbar">
+  <div class="stat">设备数 <b>${state.devices.length}</b></div>
+  <div class="stat">曲线版本 <b>${state.versions.length}</b></div>
+  <div class="stat">已存样本 <b>${state.readings.length}</b></div>
+ </div>
+ <div class="card"><h2>批量导入读数（按 设备+样本 id 幂等）</h2>
+  <p class="muted">每行 JSON，或一个 JSON 数组。同 id 不同原始值/单位/采样时刻判定为冲突，其余合法行继续处理。
+   读数需同时提供 <code>sampled_at</code>（设备声明采样时刻）与 <code>received_at</code>（服务器接收时刻，缺省=当前）。
+   原始值与声明单位会原样保存；单位先做量纲检查，绝不把显示单位写回原始事实。</p>
+  <textarea id="im-text" style="min-height:170px"></textarea>
+  <div class="row" style="margin-top:8px">
+   <button class="act" onclick="doImport()">导入并校准</button>
+   <button class="ghost" onclick="sampleImport()">填入示例</button>
+  </div>
+  <div id="im-msg"></div>
+  <div id="im-report"></div>
+ </div>`;
+}
+function sampleImport(){
+ const now=Date.now();const iso=ms=>new Date(ms).toISOString();
+ const dev=state.devices[0];
+ const arr=[
+  {id:'smp-'+Math.floor(now/1000)+'-1',device_id:dev?dev.id:'PT-204',raw_value:2.5,raw_unit:'V',sampled_at:iso(now-60000),received_at:iso(now),source:'现场手抄'},
+  {id:'smp-'+Math.floor(now/1000)+'-2',device_id:dev?dev.id:'PT-204',raw_value:0.0025,raw_unit:'kV',sampled_at:iso(now-50000),received_at:iso(now),source:'等价 2.5V（量纲相同，单位换算后求值）'}
+ ];
+ $('#im-text').value=JSON.stringify(arr,null,2);
+}
+async function doImport(){
+ const txt=$('#im-text').value.trim();let readings;
+ try{const parsed=JSON.parse(txt);readings=Array.isArray(parsed)?parsed:[parsed]}
+ catch(e){msg($('#im-msg'),'JSON 解析失败: '+e.message);return}
+ try{
+  const rep=await api('/api/readings/import',{method:'POST',body:JSON.stringify({readings})});
+  msg($('#im-msg'),`共 ${rep.total} 行：导入 ${rep.imported}，重复 ${rep.duplicate}，冲突 ${rep.conflict}，失败 ${rep.failed}`,
+    rep.failed||rep.conflict?'err':'ok');
+  $('#im-report').innerHTML=`<div class="scroll"><table><thead><tr>
+   <th>行</th><th>样本</th><th>结果</th><th>说明</th><th>校准状态</th><th>校准值</th></tr></thead><tbody>
+   ${rep.rows.map(r=>`<tr><td>${r.row}</td><td class="mono">${esc(r.id)}</td>
+    <td>${({imported:'<span class="tag ok">导入</span>',duplicate:'<span class="tag info">重复</span>',
+      conflict:'<span class="tag bad">冲突</span>',error:'<span class="tag bad">错误</span>'})[r.outcome]||r.outcome}</td>
+    <td class="muted">${esc(r.message||'')}</td>
+    <td>${r.result?statusTag(r.result.status):'—'}</td>
+    <td>${r.result&&r.result.cal_value!=null?num(r.result.cal_value)+' '+r.result.cal_unit:'—'}</td></tr>`).join('')}
+  </tbody></table></div>`;
+  await loadAll();
+ }catch(e){msg($('#im-msg'),e.message)}
+}
+
+/* ---------- tab: results ---------- */
+function renderResults(){
+ return `<div class="card"><h2>原始值 ↔ 校准值对照（历史冻结）</h2>
+  <div class="row"><div class="field"><label>按设备过滤</label>
+  <select id="rs-dev" onchange="renderResults2()"><option value="">全部</option>
+  ${state.devices.map(d=>`<option>${d.id}</option>`).join('')}</select></div>
+  <span class="muted">新曲线发布不会改写这些结果；每行可追到原始样本、曲线版本指纹与参考点。</span></div>
+  <div id="rs-body" style="margin-top:10px"></div></div>`;
+}
+function renderResults2(){
+ const dev=$('#rs-dev').value;
+ const rows=state.readings.filter(r=>!dev||r.reading.device_id===dev);
+ $('#rs-body').innerHTML=`<div class="scroll"><table><thead><tr>
+  <th>样本 ID</th><th>设备</th><th>原始值（事实）</th><th>采样时刻</th><th>接收时刻</th>
+  <th>状态</th><th>校准值</th><th>标准不确定度(k=1)</th><th>使用版本/区段</th><th>外推</th><th></th></tr></thead><tbody>
+ ${rows.map(({reading:r,result:x})=>`<tr>
+  <td class="mono">${esc(r.id)}</td><td>${esc(r.device_id)}</td>
+  <td><b>${num(r.raw_value,6)}</b> ${esc(r.raw_unit)}<div class="muted">${esc(r.source||'')}</div></td>
+  <td>${dt(r.sampled_at)}</td><td>${dt(r.received_at)}</td>
+  <td>${x?statusTag(x.status):'—'}</td>
+  <td>${x&&x.status==='calibrated'?num(x.cal_value)+' '+x.cal_unit:'—'}</td>
+  <td>${x&&x.status==='calibrated'?num(x.uncertainty.total)+` <span class="muted">=√(${num(x.uncertainty.reference)}²+${num(x.uncertainty.interpolation)}²${x.uncertainty.extrap?('+'+num(x.uncertainty.extrap)+'²'):''})</span>`:'—'}</td>
+  <td class="mono" style="font-size:11px">${x?.version_id||'—'}<br>${esc(x?.segment_label||'')} ${x?.segment_type?('('+x.segment_type+')'):''}</td>
+  <td>${x?.extrapolated?'<span class="tag warn">外推</span>':'否'}</td>
+  <td><a class="link" onclick="goTrace('${r.id}')">追溯</a></td></tr>`).join('')}
+ </tbody></table></div>`;
+}
+function goTrace(id){state.traceId=id;go('trace')}
+</script>
+<script>
+/* ---------- tab: compare ---------- */
+function renderCompare(){
+ const vs=state.versions;
+ const opts=vs.map(v=>`<option value="${v.id}">${v.id} ${statusTag(v.state)} ${esc(v.note)}</option>`).join('');
+ return `<div class="card"><h2>对比两个曲线版本对历史样本的影响</h2>
+  <p class="muted">对比是对<b>已存原始样本</b>的即时重算（草稿也可选），<b>不写回、不改写</b>任何历史结果。
+   超范围/外推差异会逐行标注。</p>
+  <div class="row">
+   <div class="field"><label>版本 A</label><select id="cp-a">${opts}</select></div>
+   <div class="field"><label>版本 B</label><select id="cp-b">${opts}</select></div>
+   <div class="field"><label>限定设备</label><select id="cp-dev"><option value="">全部</option>
+    ${state.devices.map(d=>`<option>${d.id}</option>`).join('')}</select></div>
+   <button class="act" onclick="doCompare()">对比</button>
+  </div><div id="cp-out"></div></div>`;
+}
+async function doCompare(){
+ try{
+  const rep=await api('/api/compare',{method:'POST',body:JSON.stringify(
+   {version_a:$('#cp-a').value,version_b:$('#cp-b').value,device_id:$('#cp-dev').value})});
+  $('#cp-out').innerHTML=`<div class="scroll" style="margin-top:10px"><table><thead><tr>
+   <th>样本</th><th>冻结结果（历史）</th><th>A 值</th><th>A 状态</th><th>B 值</th><th>B 状态</th>
+   <th>B−A</th><th>B−冻结历史</th></tr></thead><tbody>
+  ${rep.items.map(it=>`<tr><td class="mono">${it.reading_id}</td>
+   <td>${it.frozen.version_id?esc(it.frozen.version_id):'—'}<br>${statusTag(it.frozen.status)} ${it.frozen.cal_value?num(it.frozen.cal_value):''}</td>
+   <td>${it.a.status==='calibrated'?num(it.a.cal_value)+(it.a.extrapolated?' <span class="tag warn">外推</span>':''):'—'}</td>
+   <td>${statusTag(it.a.status)}<div class="muted">${esc(it.a.why||'')}</div></td>
+   <td>${it.b.status==='calibrated'?num(it.b.cal_value)+(it.b.extrapolated?' <span class="tag warn">外推</span>':''):'—'}</td>
+   <td>${statusTag(it.b.status)}<div class="muted">${esc(it.b.why||'')}</div></td>
+   <td>${it.delta_b_minus_a?`<b>${num(it.delta_b_minus_a)}</b>`:(it.a.status==='calibrated'&&it.b.status==='calibrated'?'0':'—')}</td>
+   <td>${it.delta_b_vs_frozen?`<b>${num(it.delta_b_vs_frozen)}</b>`:(it.frozen.status==='calibrated'&&it.b.status==='calibrated'?'0':'—')}</td>
+  </tr>`).join('')}
+  </tbody></table></div>
+  <p class="muted" style="margin-top:6px">${esc(rep.note)}</p>`;
+ }catch(e){$('#cp-out').innerHTML=`<div class="msg err">${esc(e.message)}</div>`}
+}
+
+/* ---------- tab: trace ---------- */
+function renderTrace(){
+ return `<div class="card"><h2>从结果追到原始样本与参考点</h2>
+  <div class="row"><div class="field"><label>样本（读数）ID</label>
+   <input id="tr-id" list="tr-list" value="${state.traceId||''}">
+   <datalist id="tr-list">${state.readings.map(r=>`<option value="${r.reading.id}">`).join('')}</datalist></div>
+   <button class="act" onclick="doTrace()">追溯</button></div><div id="tr-out"></div></div>`;
+}
+async function doTrace(){
+ const id=$('#tr-id').value.trim();
+ try{
+  const t=await api('/api/readings/'+encodeURIComponent(id)+'/trace');
+  const r=t.reading,x=t.result;
+  const kv=(...p)=>'<dl class="kv">'+p.map(([k,v])=>`<dt>${k}</dt><dd>${v}</dd>`).join('')+'</dl>';
+  $('#tr-out').innerHTML=`
+  <div class="row" style="align-items:flex-start">
+   <div class="card" style="flex:1;min-width:280px"><h2>① 原始样本（不可变事实）</h2>
+    ${kv(['样本 ID',`<span class="mono">${esc(r.id)}</span>`],
+      ['原始值',`<b>${num(r.raw_value,6)}</b> ${esc(r.raw_unit)}`],
+      ['设备',esc(r.device_id)],
+      ['声明采样时刻',dt(r.sampled_at)],
+      ['接收时刻',dt(r.received_at)],
+      ['来源',esc(r.source||'—')],
+      ['入库时间',dt(r.created_at)])}
+   </div>
+   <div class="card" style="flex:1;min-width:280px"><h2>② 校准结果（冻结）</h2>
+    ${x?kv(['状态',statusTag(x.status)],
+      ['校准值',x.status==='calibrated'?(num(x.cal_value)+' '+x.cal_unit):'—'],
+      ['不确定度合成',`参考 ${num(x.uncertainty.reference)} + 拟合 ${num(x.uncertainty.interpolation)} + 外推 ${num(x.uncertainty.extrap)} → 合计 <b>${num(x.uncertainty.total)}</b>`],
+      ['外推',x.extrapolated?'是（版本显式授权）':'否'],
+      ['结果指纹',fp(x.fingerprint)]):'<p class="muted">无结果</p>'}
+   </div>
+  </div>
+  <div class="card"><h2>③ 曲线选择理由</h2>
+   ${x?kv(['使用版本',`<span class="mono">${esc(x.version_id||'—')}</span>`],
+      ['版本指纹',fp(x.version_fingerprint)],
+      ['区段',`${esc(x.segment_label||'—')} (${x.segment_type||'—'})${x.selection.declared_overlap?' <span class="tag info">声明重叠点，按优先级选择</span>':''}`],
+      ['版本有效期',dt(x.selection.window_valid_from)+' → '+(x.selection.window_valid_to?dt(x.selection.window_valid_to):'长期')],
+      ['接收/采样',dt(x.selection.received_at)+' / '+dt(x.selection.sampled_at)],
+      ['理由',esc(x.selection.why||'—')],
+      ['候选版本',(x.selection.candidates||[]).join(', ')||'—']):'—'}
+  </div>
+  <div class="card"><h2>④ 参考点链路</h2>
+   ${Object.keys(t.references).length===0?'<p class="muted">该结果未引用参考点。</p>':
+    `<table><thead><tr><th>参考点</th><th>名称</th><th>数值</th><th>标准不确定度</th><th>来源</th></tr></thead><tbody>`+
+    Object.values(t.references).map(rp=>`<tr><td class="mono">${rp.id}</td><td>${esc(rp.name)}</td>
+     <td>${num(rp.value)} ${rp.unit}</td><td>${num(rp.uncertainty)} ${rp.unit}</td>
+     <td class="muted">${esc(rp.source)}</td></tr>`).join('')+`</tbody></table>`}
+  </div>
+  ${t.version?`<div class="card"><h2>⑤ 发布时的曲线定义快照（指纹 ${t.version.id}）</h2>
+   <pre class="mono" style="white-space:pre-wrap;font-size:11.5px">${esc(JSON.stringify(t.version.segments,null,2))}</pre></div>`:''}`;
+ }catch(e){$('#tr-out').innerHTML=`<div class="msg err">${esc(e.message)}</div>`}
+}
+
+/* ---------- tab: io ---------- */
+function renderIO(){
+ return `<div class="card"><h2>导出 / 导入与一致性校验</h2>
+  <p class="muted">导出为完整 JSON 快照，包含每个曲线版本与每个结果的 SHA-256 指纹。
+   导入时先重算并核对全部指纹：任何被改动的曲线或历史结果都会被拒绝，保证重启与跨系统搬运后
+   指纹、不确定度序列化和选择理由完全一致。</p>
+  <div class="row">
+   <button class="act" onclick="exportData()">下载导出文件</button>
+   <label class="ghost" style="cursor:pointer">选择文件合并导入
+    <input type="file" id="importFile2" accept="application/json" style="display:none"></label>
+   <button class="ghost" onclick="checkConversion()">量纲检查演示（bar → kPa 合法，V → kPa 拒绝）</button>
+  </div>
+  <div id="io-out"></div></div>`;
+}
+async function checkConversion(){
+ const [a,b]=await Promise.allSettled([
+  api('/api/convert',{method:'POST',body:JSON.stringify({value:1,from:'bar',to:'kPa'})}),
+  api('/api/convert',{method:'POST',body:JSON.stringify({value:1,from:'V',to:'kPa'})})]);
+ $('#io-out').innerHTML=`<div class="msg ok">1 bar = ${a.value?a.value.value:'?'} kPa（量纲相同，仅用于显示换算）</div>
+  <div class="msg err">V → kPa：${b.reason.message}（量纲不同，拒绝；显示单位不会写回原始事实）</div>`;
+}
+
+/* ---------- global actions & render ---------- */
+async function seedDemo(){try{const r=await api('/api/demo-seed',{method:'POST'});
+ alert(r.already_seeded?'演示数据已存在。':'演示数据已写入：设备 PT-204、2 个版本、4 个样本。');
+ await loadAll();render();}catch(e){alert(e.message)}}
+async function exportData(){
+ const r=await fetch('/api/export');const blob=await r.blob();
+ const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+ a.download='calibration-station-export.json';a.click();
+}
+async function importFile(file){
+ if(!file)return;
+ try{const j=JSON.parse(await file.text());const r=await api('/api/import',{method:'POST',body:JSON.stringify(j)});
+  alert('合并导入完成，共写入 '+r.merged+' 个对象。');await loadAll();render();}
+ catch(e){alert('导入被拒绝：'+e.message)}
+}
+addEventListener('change',e=>{
+ if(e.target.id==='importFile')importFile(e.target.files[0]);
+ if(e.target.id==='importFile2')importFile(e.target.files[0]);
+});
+
+function render(){
+ const map={devices:renderDevices,refs:renderRefs,curves:renderCurves,import:renderImport,
+  results:renderResults,compare:renderCompare,trace:renderTrace,io:renderIO};
+ $('#main').innerHTML=map[state.tab]();
+ if(state.tab==='curves'){fillTemplate();renderCurvesList();}
+ if(state.tab==='results')renderResults2();
+ if(state.tab==='trace'&&state.traceId)doTrace();
+}
+(async function init(){
+ nav();
+ try{await loadAll()}catch(e){$('#main').innerHTML='<div class="msg err">加载失败: '+esc(e.message)+'</div>';return}
+ render();
+})();
+</script>
+</body>
+</html>
